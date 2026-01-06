@@ -1,12 +1,13 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import io
 import hashlib
 import json
 import ast
+import extra_streamlit_components as stx # Thư viện quản lý Cookie
 
 # --- 1. CẤU HÌNH & CSS ---
 st.set_page_config(page_title="Hệ Thống Quản Lý Tài Khoản", page_icon="🎮", layout="wide")
@@ -27,9 +28,26 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Tùy chỉnh Tab con trong phần nhập liệu */
-    div[data-testid="stTabs"] button {
-        font-weight: bold;
+    /* MẸO CSS ĐỂ VIỆT HÓA NÚT UPLOAD (Browse files -> Duyệt file) */
+    [data-testid='stFileUploader'] section > button {
+        display: none; /* Ẩn nút mặc định */
+    }
+    [data-testid='stFileUploader'] section::after {
+        content: "📂 Duyệt file từ máy tính";
+        background-color: #ffffff;
+        color: #31333F;
+        border: 1px solid #d6d6d8;
+        border-radius: 4px;
+        padding: 0.5rem 1rem;
+        font-size: 1rem;
+        cursor: pointer;
+        display: inline-block;
+        margin-top: 10px;
+        font-weight: 600;
+    }
+    [data-testid='stFileUploader'] section:hover::after {
+        border-color: #ff4b4b;
+        color: #ff4b4b;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -63,10 +81,33 @@ def init_db():
     conn.commit()
     conn.close()
 
+# --- XỬ LÝ COOKIE MANAGER ---
+# Hàm này khởi tạo bộ quản lý cookie
+def get_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_manager()
+
 # --- XỬ LÝ DỮ LIỆU ---
 def get_current_user_id():
+    # Ưu tiên lấy từ Session State
     if 'user_id' in st.session_state and st.session_state['user_id']:
         return st.session_state['user_id']
+    
+    # Nếu không có Session, thử check Cookie
+    cookie_user = cookie_manager.get(cookie="game_app_user")
+    if cookie_user:
+        # Nếu cookie hợp lệ, tự động đăng nhập lại
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE username=?", (cookie_user,))
+        data = c.fetchall()
+        conn.close()
+        if data:
+            st.session_state.user_id = data[0][0]
+            st.session_state.username = cookie_user
+            return st.session_state.user_id
+            
     return None
 
 def get_all_customers():
@@ -271,23 +312,18 @@ def show_monthly_revenue(df, price):
     st.bar_chart(stats, x="Tháng", y="Rev", color="#2ecc71")
     st.dataframe(stats, hide_index=True)
 
-# Hàm xử lý text đầu vào (dùng chung cho file và paste)
 def parse_import_text(text_content):
     clean = text_content.strip()
     try:
-        # 1. Thử parse JSON
         if clean.startswith("[") or clean.startswith("{"):
             try: return pd.DataFrame(json.loads(clean))
             except: return pd.DataFrame(ast.literal_eval(clean))
         
-        # 2. Thử parse CSV
         df = pd.read_csv(io.StringIO(clean), sep=None, engine='python', header=None)
-        # Check header
         if df.iloc[0].apply(lambda x: isinstance(x, str)).all():
             return pd.read_csv(io.StringIO(clean), sep=None, engine='python')
         return df
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 # --- 4. GIAO DIỆN CHÍNH ---
 init_db()
@@ -295,14 +331,24 @@ init_db()
 with st.sidebar:
     st.image("https://i.ibb.co/3ymHhQVd/logo.png", width=250)
     
+    # Kích hoạt cookie manager
+    # Lưu ý: Mỗi lần gọi get_manager() sẽ render 1 iframe ẩn để đọc cookie
+    
+    current_user_id = get_current_user_id()
+
     if 'username' not in st.session_state: st.session_state.username = None
 
     if st.session_state.username:
         st.success(f"Xin chào, {st.session_state.username}!")
-        if st.button("Đăng xuất"):
-            st.session_state.username = None; st.session_state.user_id = None; st.rerun()
+        if st.button("🚪 Đăng xuất"):
+            # Xóa session
+            st.session_state.username = None
+            st.session_state.user_id = None
+            # Xóa cookie
+            cookie_manager.delete("game_app_user")
+            st.rerun()
     else:
-        st.warning("⚠️ Bạn đang dùng **CHẾ ĐỘ KHÁCH (GUEST MODE)**.\n\nDữ liệu sẽ được lưu tạm thời trên trình duyệt và **SẼ MẤT** nếu bạn tải lại trang hoặc tắt tab.\n\nĐể lưu trữ vĩnh viễn, vui lòng đăng ký tài khoản.")
+        st.warning("⚠️ Bạn đang dùng **CHẾ ĐỘ KHÁCH**.\n\nĐể lưu trạng thái đăng nhập khi tải lại trang, vui lòng đăng nhập.")
         with st.expander("🔐 Đăng nhập / Đăng ký"):
             t1, t2 = st.tabs(["Đăng nhập", "Đăng ký"])
             with t1:
@@ -310,7 +356,11 @@ with st.sidebar:
                 if st.button("Đăng nhập"):
                     res = login_user(u, p)
                     if res: 
-                        st.session_state.user_id = res[0][0]; st.session_state.username = u; st.rerun()
+                        st.session_state.user_id = res[0][0]
+                        st.session_state.username = u
+                        # LƯU COOKIE (Hết hạn sau 30 ngày)
+                        cookie_manager.set("game_app_user", u, expires_at=datetime.now() + timedelta(days=30))
+                        st.rerun()
                     else: st.error("Sai tài khoản hoặc mật khẩu")
             with t2:
                 nu = st.text_input("Tài khoản mới", key="nu"); np = st.text_input("Mật khẩu mới", type="password", key="np")
@@ -338,6 +388,7 @@ with tab1:
         if st.button("➕ Thêm Khách Hàng", type="primary"):
             show_add_modal()
     with col_search:
+        # Đã sửa placeholder theo yêu cầu
         search = st.text_input("🔍 Tìm kiếm:", placeholder="Nhập tên hoặc thông tin...")
     
     df = get_all_customers()
@@ -401,26 +452,21 @@ with tab2:
     else:
         st.info("Chưa có dữ liệu để quản lý.")
 
-# --- TAB 3: NHẬP/XUẤT (ĐÃ KHÔI PHỤC) ---
+# --- TAB 3: NHẬP/XUẤT (ĐÃ THÊM .TXT VÀ VIỆT HÓA) ---
 with tab3:
     imp, exp = st.columns(2)
     with imp:
         st.subheader("📥 Nhập dữ liệu (Import)")
-        
-        # CHIA TAB CON: TẢI FILE VÀ DÁN TEXT
         t_file, t_paste = st.tabs(["📂 Tải tệp lên", "📝 Dán văn bản"])
         
-        # 1. TAB TẢI FILE
         with t_file:
             st.caption("Hỗ trợ: .csv, .json, .txt hoặc các định dạng văn bản khác.")
+            # Nút upload này sẽ bị CSS đổi chữ "Browse files" thành "Duyệt file từ máy tính"
             uploaded_file = st.file_uploader("Chọn tệp tin:", type=['csv', 'json', 'txt'])
             
             if uploaded_file is not None:
-                # Đọc nội dung file
                 try:
-                    # Đọc mọi file dưới dạng text trước
                     string_data = uploaded_file.read().decode("utf-8")
-                    
                     if st.button("🚀 Xử lý tệp tin"):
                         df_up = parse_import_text(string_data)
                         if not df_up.empty:
@@ -430,12 +476,9 @@ with tab3:
                                 add_customer(r['name'], r['device_info'], r['reg_date'], r['duration'])
                                 cnt += 1
                             st.success(f"Đã nhập thành công {cnt} khách hàng!"); time.sleep(1); st.rerun()
-                        else:
-                            st.error("Không thể đọc dữ liệu từ file này.")
-                except Exception as e:
-                    st.error(f"Lỗi đọc file: {e}")
+                        else: st.error("Không thể đọc dữ liệu từ file này.")
+                except Exception as e: st.error(f"Lỗi đọc file: {e}")
 
-        # 2. TAB DÁN TEXT
         with t_paste:
             with st.form("paste_form"):
                 txt = st.text_area("Dán dữ liệu vào đây (JSON hoặc CSV)", height=200, placeholder='[{"name": "A", ...}]')
@@ -449,15 +492,18 @@ with tab3:
                                 add_customer(r['name'], r['device_info'], r['reg_date'], r['duration'])
                                 cnt += 1
                             st.success(f"Đã nhập thành công {cnt} khách hàng!"); time.sleep(1); st.rerun()
-                        else:
-                            st.error("Dữ liệu không hợp lệ.")
+                        else: st.error("Dữ liệu không hợp lệ.")
     
     with exp:
         st.subheader("📤 Xuất dữ liệu (Export)")
         dfe = get_all_customers()
         if not dfe.empty:
+            # CSV
             st.download_button("Tải xuống CSV (Excel)", dfe.to_csv(index=False).encode('utf-8'), "data.csv", "text/csv")
+            # JSON
             st.download_button("Tải xuống JSON", dfe.to_json(orient="records", force_ascii=False).encode('utf-8'), "data.json", "application/json")
+            # TXT (Dạng tab separated, dễ đọc)
+            st.download_button("Tải xuống .txt", dfe.to_csv(index=False, sep="\t").encode('utf-8'), "data.txt", "text/plain")
         else:
             st.warning("Chưa có dữ liệu để xuất.")
 

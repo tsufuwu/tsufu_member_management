@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+dulieu_game.db
+.env

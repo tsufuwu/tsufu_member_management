@@ -123,65 +123,49 @@ def delete_customer_db(id):
         df = st.session_state.guest_data
         st.session_state.guest_data = df[df['id'] != id].reset_index(drop=True)
 
-# --- CALLBACK SỬA TRỰC TIẾP ---
+# --- CALLBACK SỬA TRỰC TIẾP (TAB 1) ---
 def save_editor_changes():
-    """Hàm này tự động chạy khi bạn sửa bất cứ gì trên bảng"""
-    changes = st.session_state.editor_changes # Lấy các thay đổi
-    
-    # Lấy Dataframe hiện tại đang hiển thị trên màn hình
-    # (Được lưu ở session_state trong vòng lặp chính)
+    changes = st.session_state.editor_changes
     if 'current_view_df' not in st.session_state: return
     df_view = st.session_state.current_view_df
 
-    # 1. Xử lý Sửa (Edited)
+    # Sửa
     for row_idx, edits in changes['edited_rows'].items():
-        # Lấy ID của dòng bị sửa (dựa trên index)
-        # Vì df_view có thể đã bị lọc tìm kiếm, ta cần lấy đúng ID
         try:
             record_id = df_view.iloc[row_idx]['id']
-            # Lấy dữ liệu cũ
             record = df_view.iloc[row_idx].to_dict()
-            
-            # Cập nhật dữ liệu mới từ edits
-            # Mapping tên cột hiển thị -> tên cột DB
-            col_map = {"Tên Khách Hàng": "name", "Thông tin khách hàng": "device_info", "Gói (tháng)": "duration", "Ngày ĐK": "reg_date_dt"}
             
             new_name = edits.get("Tên Khách Hàng", record['name'])
             new_device = edits.get("Thông tin khách hàng", record['device_info'])
             new_dur = edits.get("Gói (tháng)", record['duration'])
             
-            # Xử lý ngày tháng đặc biệt (vì Editor trả về datetime hoặc string)
             new_date_val = edits.get("Ngày ĐK", record['reg_date_obj'])
             new_date_str = new_date_val.strftime("%d/%m/%Y") if isinstance(new_date_val, datetime) else str(new_date_val)
 
             update_customer_db(record_id, new_name, new_device, new_date_str, int(new_dur))
-        except Exception as e:
-            st.error(f"Lỗi khi lưu sửa: {e}")
+        except: pass
 
-    # 2. Xử lý Xóa (Deleted)
+    # Xóa (Bằng nút Delete của bảng)
     for row_idx in changes['deleted_rows']:
         try:
             record_id = df_view.iloc[row_idx]['id']
             delete_customer_db(record_id)
         except: pass
 
-    # 3. Xử lý Thêm Mới (Added)
+    # Thêm Mới (Bằng dòng cuối cùng của bảng)
     for new_row in changes['added_rows']:
         try:
             n_name = new_row.get("Tên Khách Hàng", "Khách Mới")
             n_dev = new_row.get("Thông tin khách hàng", "")
             n_dur = new_row.get("Gói (tháng)", 1)
-            # Mặc định ngày nay nếu không chọn
             n_date_str = datetime.now().strftime("%d/%m/%Y") 
             if "Ngày ĐK" in new_row:
-                 # Nếu người dùng chọn ngày
                  try: n_date_str = datetime.strptime(str(new_row["Ngày ĐK"]), "%Y-%m-%d").strftime("%d/%m/%Y")
-                 except: pass # Giữ mặc định
-            
+                 except: pass
             add_customer(n_name, n_dev, n_date_str, int(n_dur))
         except: pass
 
-# --- AUTH & UTILS ---
+# --- UTILS & AUTH ---
 def create_user(username, password):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -215,19 +199,13 @@ def calculate_expiry(start_date, months):
 
 def process_data_for_editor(df):
     if df.empty: return df
-    
-    # 1. Chuẩn hóa dữ liệu để hiển thị lên Editor
-    # Chuyển string ngày tháng sang object datetime để Editor hiện lịch chọn
     df['reg_date_obj'] = df['reg_date'].apply(lambda x: parse_date(x))
-    # Duration sang int
     df['duration'] = pd.to_numeric(df['duration'], errors='coerce').fillna(1).astype(int)
 
-    # 2. Tính toán (Chỉ để hiển thị, không sửa)
     today = datetime.now()
     def get_status_expiry(row):
         exp = calculate_expiry(row['reg_date_obj'], row['duration'])
         if not exp: return "Lỗi", "⚪ Lỗi"
-        
         days = (exp - today).days
         exp_str = exp.strftime("%d/%m/%Y")
         if days < 0: return exp_str, f"🔴 ĐÃ HẾT ({abs(days)}d)"
@@ -235,18 +213,13 @@ def process_data_for_editor(df):
         return exp_str, f"🟢 Còn {days} ngày"
 
     df[['Hết Hạn', 'Trạng Thái']] = df.apply(lambda x: pd.Series(get_status_expiry(x)), axis=1)
-
-    # 3. Đổi tên cột cho đẹp (Mapping với hàm save_editor_changes)
+    
     df_display = df.rename(columns={
         "name": "Tên Khách Hàng",
         "device_info": "Thông tin khách hàng",
         "reg_date_obj": "Ngày ĐK",
         "duration": "Gói (tháng)"
     })
-    
-    # Giữ lại các cột cần thiết (bao gồm id ẩn)
-    cols = ['id', 'Tên Khách Hàng', 'Thông tin khách hàng', 'Ngày ĐK', 'Gói (tháng)', 'Hết Hạn', 'Trạng Thái', 'name', 'device_info', 'reg_date', 'duration', 'reg_date_obj']
-    # Chúng ta cần giữ các cột gốc để phục hồi nếu cần, nhưng chỉ show các cột rename
     return df_display
 
 def smart_import(df_raw):
@@ -267,6 +240,19 @@ def smart_import(df_raw):
     df_clean['duration'] = pd.to_numeric(df_raw[col_map['duration']], errors='coerce').fillna(1).astype(int) if col_map['duration'] else 1
     return df_clean
 
+@st.dialog("➕ Thêm Khách Hàng Nhanh")
+def show_add_modal():
+    with st.form("quick_add"):
+        n = st.text_input("Tên khách hàng")
+        d = st.text_input("Thông tin khách hàng")
+        dt = st.date_input("Ngày Đăng Ký", datetime.now(), format="DD/MM/YYYY")
+        dur = st.number_input("Thời hạn (tháng)", min_value=1, value=1)
+        if st.form_submit_button("Lưu ngay", type="primary"):
+            if n:
+                add_customer(n, d, dt.strftime("%d/%m/%Y"), int(dur))
+                st.success("Đã thêm thành công!"); time.sleep(0.5); st.rerun()
+            else: st.error("Vui lòng nhập tên")
+
 @st.dialog("📊 Báo Cáo Doanh Thu")
 def show_monthly_revenue(df, price):
     if df.empty: st.warning("Chưa có dữ liệu."); return
@@ -281,7 +267,7 @@ def show_monthly_revenue(df, price):
     df['Rev'] = df['duration'] * price
     
     stats = df.groupby('YYYY_MM')['Rev'].sum().reset_index()
-    stats['Tháng'] = stats['YYYY_MM'] # Có thể format đẹp hơn
+    stats['Tháng'] = stats['YYYY_MM']
     st.metric("TỔNG DOANH THU", "{:,.0f} VNĐ".format(stats['Rev'].sum()))
     st.bar_chart(stats, x="Tháng", y="Rev", color="#2ecc71")
     st.dataframe(stats, hide_index=True)
@@ -291,44 +277,55 @@ init_db()
 
 with st.sidebar:
     st.image("https://i.ibb.co/3ymHhQVd/logo.png", width=250)
+    
+    # --- PHỤC HỒI GIAO DIỆN AUTH TIẾNG VIỆT ---
     if 'username' not in st.session_state: st.session_state.username = None
 
     if st.session_state.username:
-        st.success(f"Hi, {st.session_state.username}")
-        if st.button("Logout"):
+        st.success(f"Xin chào, {st.session_state.username}!")
+        if st.button("Đăng xuất"):
             st.session_state.username = None; st.session_state.user_id = None; st.rerun()
     else:
-        st.warning("Guest Mode")
-        with st.expander("Login / Sign up"):
-            t1, t2 = st.tabs(["Login", "Sign up"])
+        st.warning("⚠️ Bạn đang dùng **CHẾ ĐỘ KHÁCH (GUEST MODE)**.\n\nDữ liệu sẽ được lưu tạm thời trên trình duyệt và **SẼ MẤT** nếu bạn tải lại trang hoặc tắt tab.\n\nĐể lưu trữ vĩnh viễn, vui lòng đăng ký tài khoản.")
+        with st.expander("🔐 Đăng nhập / Đăng ký"):
+            t1, t2 = st.tabs(["Đăng nhập", "Đăng ký"])
             with t1:
-                u = st.text_input("User", key="lu"); p = st.text_input("Pass", type="password", key="lp")
-                if st.button("Login"):
+                u = st.text_input("Tài khoản", key="lu"); p = st.text_input("Mật khẩu", type="password", key="lp")
+                if st.button("Đăng nhập"):
                     res = login_user(u, p)
                     if res: 
                         st.session_state.user_id = res[0][0]; st.session_state.username = u; st.rerun()
-                    else: st.error("Fail")
+                    else: st.error("Sai tài khoản hoặc mật khẩu")
             with t2:
-                nu = st.text_input("New User", key="nu"); np = st.text_input("New Pass", type="password", key="np")
-                if st.button("Sign up"):
-                    if create_user(nu, np): st.success("OK")
-                    else: st.error("Exists")
+                nu = st.text_input("Tài khoản mới", key="nu"); np = st.text_input("Mật khẩu mới", type="password", key="np")
+                if st.button("Đăng ký"):
+                    if create_user(nu, np): st.success("Tạo thành công! Hãy đăng nhập.")
+                    else: st.error("Tên tài khoản đã tồn tại")
     st.divider()
-    st.link_button("Donate ❤️", "https://tsufu.gitbook.io/donate/", type="primary")
+    st.link_button("Donate Ủng Hộ ❤️", "https://tsufu.gitbook.io/donate/", type="primary")
 
 st.markdown("""<div class="custom-header"><h1>🖊️ HỆ THỐNG QUẢN LÝ GÓI ĐĂNG KÍ</h1></div>""", unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["📋 DANH SÁCH & SỬA NHANH", "➕ THÊM CHI TIẾT", "📂 NHẬP/XUẤT"])
+# PHỤC HỒI ĐẦY ĐỦ 3 TAB CHÍNH
+tab1, tab2, tab3 = st.tabs(["📋 DANH SÁCH", "✏️ QUẢN LÝ CHI TIẾT", "📂 NHẬP/XUẤT"])
 
-# --- TAB 1: DANH SÁCH (SỬA TRỰC TIẾP) ---
+# --- TAB 1: DANH SÁCH & SỬA NHANH ---
 with tab1:
     c1, c2, c3 = st.columns([1, 2, 1])
-    with c1: price = st.number_input("Giá/tháng:", 50000, step=10000)
+    with c1: price = st.number_input("Giá/tháng (VNĐ):", 50000, step=10000)
     with c3: 
-        if st.button("💎 Doanh Thu"): 
+        if st.button("💎 Xem Doanh Thu"): 
             show_monthly_revenue(get_all_customers(), price)
     
-    search = st.text_input("🔍 Tìm kiếm:", placeholder="Nhập từ khóa...")
+    st.divider()
+    
+    # Hàng nút chức năng
+    col_btn, col_search = st.columns([1, 3])
+    with col_btn:
+        if st.button("➕ Thêm Khách Hàng", type="primary"):
+            show_add_modal()
+    with col_search:
+        search = st.text_input("🔍 Tìm kiếm:", placeholder="Nhập tên hoặc thiết bị...")
     
     # Lấy dữ liệu
     df = get_all_customers()
@@ -337,8 +334,6 @@ with tab1:
     
     # Xử lý hiển thị
     df_editor = process_data_for_editor(df)
-    
-    # Lưu bản copy để Callback dùng
     st.session_state.current_view_df = df_editor
 
     if not df_editor.empty:
@@ -346,62 +341,101 @@ with tab1:
         edited_df = st.data_editor(
             df_editor,
             column_config={
-                "id": None, # Ẩn cột ID
-                "name": None, "device_info": None, "reg_date": None, "duration": None, "reg_date_obj": None, # Ẩn cột gốc
+                "id": None, 
+                "name": None, "device_info": None, "reg_date": None, "duration": None, "reg_date_obj": None,
                 "Tên Khách Hàng": st.column_config.TextColumn("Tên Khách Hàng", required=True),
                 "Ngày ĐK": st.column_config.DateColumn("Ngày ĐK", format="DD/MM/YYYY"),
                 "Gói (tháng)": st.column_config.NumberColumn("Gói", min_value=1, format="%d tháng"),
-                "Hết Hạn": st.column_config.TextColumn("Hết Hạn", disabled=True), # Không cho sửa
-                "Trạng Thái": st.column_config.TextColumn("Trạng Thái", disabled=True), # Không cho sửa
+                "Hết Hạn": st.column_config.TextColumn("Hết Hạn", disabled=True), 
+                "Trạng Thái": st.column_config.TextColumn("Trạng Thái", disabled=True), 
             },
             column_order=["Tên Khách Hàng", "Thông tin khách hàng", "Ngày ĐK", "Gói (tháng)", "Hết Hạn", "Trạng Thái"],
             use_container_width=True,
-            num_rows="dynamic", # Cho phép thêm/xóa dòng
+            num_rows="dynamic",
             key="editor_changes",
-            on_change=save_editor_changes # GỌI HÀM LƯU TỰ ĐỘNG
+            on_change=save_editor_changes
         )
+        st.caption("*Mẹo: Bạn có thể sửa trực tiếp trên bảng. Để xóa, chọn dòng và nhấn phím Delete, hoặc qua Tab Quản Lý.")
     else:
-        st.info("Chưa có dữ liệu. Bạn có thể thêm trực tiếp vào bảng trống bên dưới nếu muốn.")
+        st.info("Chưa có dữ liệu.")
 
-# --- TAB 2: THÊM CHI TIẾT ---
+# --- TAB 2: QUẢN LÝ / SỬA / XÓA (PHỤC HỒI THEO YÊU CẦU) ---
 with tab2:
-    with st.form("add"):
-        n = st.text_input("Tên"); d = st.text_input("Thông tin")
-        dt = st.date_input("Ngày", datetime.now(), format="DD/MM/YYYY")
-        dur = st.number_input("Tháng", min_value=1, value=1)
-        if st.form_submit_button("Lưu"):
-            add_customer(n, d, dt.strftime("%d/%m/%Y"), int(dur))
-            st.success("Đã thêm"); time.sleep(0.5); st.rerun()
+    st.subheader("🛠️ Chỉnh sửa hoặc Xóa Khách Hàng")
+    df_edit = get_all_customers()
+    if not df_edit.empty:
+        # Chọn khách
+        opts = df_edit.apply(lambda x: f"{x['id']} - {x['name']}", axis=1)
+        choice = st.selectbox("👉 Chọn khách hàng cần thao tác:", opts)
+        
+        if choice:
+            cid = int(choice.split(" - ")[0])
+            crec = df_edit[df_edit['id'] == cid].iloc[0]
+            
+            col_l, col_r = st.columns(2)
+            
+            # Form Sửa
+            with col_l:
+                with st.form("edit_legacy"):
+                    st.write("📝 **Sửa thông tin:**")
+                    en = st.text_input("Tên", crec['name'])
+                    ed = st.text_input("Thông tin", crec['device_info'])
+                    dt_val = parse_date(crec['reg_date']) or datetime.now()
+                    edp = st.date_input("Ngày ĐK", dt_val, format="DD/MM/YYYY")
+                    edu = st.number_input("Tháng", value=int(crec['duration']), min_value=1)
+                    if st.form_submit_button("Lưu Thay Đổi"):
+                        update_customer_db(cid, en, ed, edp.strftime("%d/%m/%Y"), edu)
+                        st.success("Đã cập nhật!"); time.sleep(0.5); st.rerun()
+            
+            # Nút Xóa
+            with col_r:
+                st.write("🗑️ **Xóa dữ liệu:**")
+                st.warning("Hành động này không thể hoàn tác.")
+                st.write(f"Bạn đang chọn xóa khách: **{crec['name']}**")
+                if st.button("❌ XÁA KHÁCH HÀNG NÀY", type="primary"):
+                    delete_customer_db(cid)
+                    st.success("Đã xóa thành công!"); time.sleep(0.5); st.rerun()
+    else:
+        st.info("Chưa có dữ liệu để quản lý.")
 
-# --- TAB 3: NHẬP/XUẤT ---
+# --- TAB 3: NHẬP/XUẤT (PHỤC HỒI TÍNH NĂNG NHẬP THÔNG MINH) ---
 with tab3:
     imp, exp = st.columns(2)
     with imp:
-        st.subheader("Nhập liệu")
+        st.subheader("📥 Nhập dữ liệu (Import)")
+        st.caption("Hỗ trợ: Copy/Paste văn bản JSON hoặc CSV. Tự động điền ngày nếu thiếu.")
         with st.form("paste"):
-            txt = st.text_area("Dán JSON/CSV vào đây")
-            if st.form_submit_button("Xử lý"):
+            txt = st.text_area("Dán dữ liệu vào đây (JSON hoặc CSV)", height=200)
+            if st.form_submit_button("🚀 Xử lý & Nhập"):
                 try:
                     clean = txt.strip()
+                    # Logic nhận diện JSON
                     if clean.startswith("[") or clean.startswith("{"):
                         try: df_up = pd.DataFrame(json.loads(clean))
                         except: df_up = pd.DataFrame(ast.literal_eval(clean))
                     else:
+                        # Logic nhận diện CSV
                         df_up = pd.read_csv(io.StringIO(clean), sep=None, engine='python', header=None)
                         if df_up.iloc[0].apply(lambda x: isinstance(x, str)).all():
                             df_up = pd.read_csv(io.StringIO(clean), sep=None, engine='python')
                     
-                    df_c = smart_import(df_up)
-                    for _, r in df_c.iterrows():
-                        add_customer(r['name'], r['device_info'], r['reg_date'], r['duration'])
-                    st.success("Thành công!"); time.sleep(1); st.rerun()
-                except: st.error("Lỗi định dạng")
+                    if not df_up.empty:
+                        df_c = smart_import(df_up)
+                        cnt = 0
+                        for _, r in df_c.iterrows():
+                            add_customer(r['name'], r['device_info'], r['reg_date'], r['duration'])
+                            cnt += 1
+                        st.success(f"Đã nhập thành công {cnt} khách hàng!"); time.sleep(1); st.rerun()
+                    else: st.error("Không tìm thấy dữ liệu.")
+                except Exception as e: st.error(f"Lỗi định dạng: {e}")
     
     with exp:
-        st.subheader("Xuất liệu")
+        st.subheader("📤 Xuất dữ liệu (Export)")
         dfe = get_all_customers()
         if not dfe.empty:
-            st.download_button("CSV", dfe.to_csv(index=False).encode('utf-8'), "data.csv", "text/csv")
-            st.download_button("JSON", dfe.to_json(orient="records", force_ascii=False).encode('utf-8'), "data.json", "application/json")
+            st.download_button("Tải xuống CSV (Excel)", dfe.to_csv(index=False).encode('utf-8'), "data.csv", "text/csv")
+            st.download_button("Tải xuống JSON", dfe.to_json(orient="records", force_ascii=False).encode('utf-8'), "data.json", "application/json")
+        else:
+            st.warning("Chưa có dữ liệu để xuất.")
 
 st.markdown("""<div class="footer">Dev by Tsufu / Phú Trần Trung Lê | <a href="https://tsufu.gitbook.io/donate/" target="_blank">Donate Coffee ☕</a></div>""", unsafe_allow_html=True)

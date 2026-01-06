@@ -26,6 +26,11 @@ st.markdown("""
     }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+    
+    /* Tùy chỉnh Tab con trong phần nhập liệu */
+    div[data-testid="stTabs"] button {
+        font-weight: bold;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,7 +83,7 @@ def get_all_customers():
             ])
         return st.session_state.guest_data
 
-# Các hàm thao tác DB (Add/Update/Delete)
+# Các hàm thao tác DB
 def add_customer(name, device, date, duration):
     user_id = get_current_user_id()
     if user_id:
@@ -123,36 +128,30 @@ def delete_customer_db(id):
         df = st.session_state.guest_data
         st.session_state.guest_data = df[df['id'] != id].reset_index(drop=True)
 
-# --- CALLBACK SỬA TRỰC TIẾP (TAB 1) ---
+# --- CALLBACK SỬA TRỰC TIẾP ---
 def save_editor_changes():
     changes = st.session_state.editor_changes
     if 'current_view_df' not in st.session_state: return
     df_view = st.session_state.current_view_df
 
-    # Sửa
     for row_idx, edits in changes['edited_rows'].items():
         try:
             record_id = df_view.iloc[row_idx]['id']
             record = df_view.iloc[row_idx].to_dict()
-            
             new_name = edits.get("Tên Khách Hàng", record['name'])
             new_device = edits.get("Thông tin khách hàng", record['device_info'])
             new_dur = edits.get("Gói (tháng)", record['duration'])
-            
             new_date_val = edits.get("Ngày ĐK", record['reg_date_obj'])
             new_date_str = new_date_val.strftime("%d/%m/%Y") if isinstance(new_date_val, datetime) else str(new_date_val)
-
             update_customer_db(record_id, new_name, new_device, new_date_str, int(new_dur))
         except: pass
 
-    # Xóa (Bằng nút Delete của bảng)
     for row_idx in changes['deleted_rows']:
         try:
             record_id = df_view.iloc[row_idx]['id']
             delete_customer_db(record_id)
         except: pass
 
-    # Thêm Mới (Bằng dòng cuối cùng của bảng)
     for new_row in changes['added_rows']:
         try:
             n_name = new_row.get("Tên Khách Hàng", "Khách Mới")
@@ -165,7 +164,7 @@ def save_editor_changes():
             add_customer(n_name, n_dev, n_date_str, int(n_dur))
         except: pass
 
-# --- UTILS & AUTH ---
+# --- UTILS ---
 def create_user(username, password):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -272,13 +271,30 @@ def show_monthly_revenue(df, price):
     st.bar_chart(stats, x="Tháng", y="Rev", color="#2ecc71")
     st.dataframe(stats, hide_index=True)
 
+# Hàm xử lý text đầu vào (dùng chung cho file và paste)
+def parse_import_text(text_content):
+    clean = text_content.strip()
+    try:
+        # 1. Thử parse JSON
+        if clean.startswith("[") or clean.startswith("{"):
+            try: return pd.DataFrame(json.loads(clean))
+            except: return pd.DataFrame(ast.literal_eval(clean))
+        
+        # 2. Thử parse CSV
+        df = pd.read_csv(io.StringIO(clean), sep=None, engine='python', header=None)
+        # Check header
+        if df.iloc[0].apply(lambda x: isinstance(x, str)).all():
+            return pd.read_csv(io.StringIO(clean), sep=None, engine='python')
+        return df
+    except:
+        return pd.DataFrame()
+
 # --- 4. GIAO DIỆN CHÍNH ---
 init_db()
 
 with st.sidebar:
     st.image("https://i.ibb.co/3ymHhQVd/logo.png", width=250)
     
-    # --- PHỤC HỒI GIAO DIỆN AUTH TIẾNG VIỆT ---
     if 'username' not in st.session_state: st.session_state.username = None
 
     if st.session_state.username:
@@ -306,7 +322,6 @@ with st.sidebar:
 
 st.markdown("""<div class="custom-header"><h1>🖊️ HỆ THỐNG QUẢN LÝ GÓI ĐĂNG KÍ</h1></div>""", unsafe_allow_html=True)
 
-# PHỤC HỒI ĐẦY ĐỦ 3 TAB CHÍNH
 tab1, tab2, tab3 = st.tabs(["📋 DANH SÁCH", "✏️ QUẢN LÝ CHI TIẾT", "📂 NHẬP/XUẤT"])
 
 # --- TAB 1: DANH SÁCH & SỬA NHANH ---
@@ -318,26 +333,21 @@ with tab1:
             show_monthly_revenue(get_all_customers(), price)
     
     st.divider()
-    
-    # Hàng nút chức năng
     col_btn, col_search = st.columns([1, 3])
     with col_btn:
         if st.button("➕ Thêm Khách Hàng", type="primary"):
             show_add_modal()
     with col_search:
-        search = st.text_input("🔍 Tìm kiếm:", placeholder="Nhập tên hoặc thiết bị...")
+        search = st.text_input("🔍 Tìm kiếm:", placeholder="Nhập tên hoặc thông tin...")
     
-    # Lấy dữ liệu
     df = get_all_customers()
     if search:
         df = df[df['name'].str.contains(search, case=False) | df['device_info'].str.contains(search, case=False)]
     
-    # Xử lý hiển thị
     df_editor = process_data_for_editor(df)
     st.session_state.current_view_df = df_editor
 
     if not df_editor.empty:
-        # HIỂN THỊ BẢNG SỬA TRỰC TIẾP
         edited_df = st.data_editor(
             df_editor,
             column_config={
@@ -359,22 +369,18 @@ with tab1:
     else:
         st.info("Chưa có dữ liệu.")
 
-# --- TAB 2: QUẢN LÝ / SỬA / XÓA (PHỤC HỒI THEO YÊU CẦU) ---
+# --- TAB 2: QUẢN LÝ ---
 with tab2:
     st.subheader("🛠️ Chỉnh sửa hoặc Xóa Khách Hàng")
     df_edit = get_all_customers()
     if not df_edit.empty:
-        # Chọn khách
         opts = df_edit.apply(lambda x: f"{x['id']} - {x['name']}", axis=1)
         choice = st.selectbox("👉 Chọn khách hàng cần thao tác:", opts)
         
         if choice:
             cid = int(choice.split(" - ")[0])
             crec = df_edit[df_edit['id'] == cid].iloc[0]
-            
             col_l, col_r = st.columns(2)
-            
-            # Form Sửa
             with col_l:
                 with st.form("edit_legacy"):
                     st.write("📝 **Sửa thông tin:**")
@@ -386,48 +392,65 @@ with tab2:
                     if st.form_submit_button("Lưu Thay Đổi"):
                         update_customer_db(cid, en, ed, edp.strftime("%d/%m/%Y"), edu)
                         st.success("Đã cập nhật!"); time.sleep(0.5); st.rerun()
-            
-            # Nút Xóa
             with col_r:
                 st.write("🗑️ **Xóa dữ liệu:**")
                 st.warning("Hành động này không thể hoàn tác.")
-                st.write(f"Bạn đang chọn xóa khách: **{crec['name']}**")
                 if st.button("❌ XÁA KHÁCH HÀNG NÀY", type="primary"):
                     delete_customer_db(cid)
                     st.success("Đã xóa thành công!"); time.sleep(0.5); st.rerun()
     else:
         st.info("Chưa có dữ liệu để quản lý.")
 
-# --- TAB 3: NHẬP/XUẤT (PHỤC HỒI TÍNH NĂNG NHẬP THÔNG MINH) ---
+# --- TAB 3: NHẬP/XUẤT (ĐÃ KHÔI PHỤC) ---
 with tab3:
     imp, exp = st.columns(2)
     with imp:
         st.subheader("📥 Nhập dữ liệu (Import)")
-        st.caption("Hỗ trợ: Copy/Paste văn bản JSON hoặc CSV. Tự động điền ngày nếu thiếu.")
-        with st.form("paste"):
-            txt = st.text_area("Dán dữ liệu vào đây (JSON hoặc CSV)", height=200)
-            if st.form_submit_button("🚀 Xử lý & Nhập"):
+        
+        # CHIA TAB CON: TẢI FILE VÀ DÁN TEXT
+        t_file, t_paste = st.tabs(["📂 Tải tệp lên", "📝 Dán văn bản"])
+        
+        # 1. TAB TẢI FILE
+        with t_file:
+            st.caption("Hỗ trợ: .csv, .json, .txt hoặc các định dạng văn bản khác.")
+            uploaded_file = st.file_uploader("Chọn tệp tin:", type=['csv', 'json', 'txt'])
+            
+            if uploaded_file is not None:
+                # Đọc nội dung file
                 try:
-                    clean = txt.strip()
-                    # Logic nhận diện JSON
-                    if clean.startswith("[") or clean.startswith("{"):
-                        try: df_up = pd.DataFrame(json.loads(clean))
-                        except: df_up = pd.DataFrame(ast.literal_eval(clean))
-                    else:
-                        # Logic nhận diện CSV
-                        df_up = pd.read_csv(io.StringIO(clean), sep=None, engine='python', header=None)
-                        if df_up.iloc[0].apply(lambda x: isinstance(x, str)).all():
-                            df_up = pd.read_csv(io.StringIO(clean), sep=None, engine='python')
+                    # Đọc mọi file dưới dạng text trước
+                    string_data = uploaded_file.read().decode("utf-8")
                     
-                    if not df_up.empty:
-                        df_c = smart_import(df_up)
-                        cnt = 0
-                        for _, r in df_c.iterrows():
-                            add_customer(r['name'], r['device_info'], r['reg_date'], r['duration'])
-                            cnt += 1
-                        st.success(f"Đã nhập thành công {cnt} khách hàng!"); time.sleep(1); st.rerun()
-                    else: st.error("Không tìm thấy dữ liệu.")
-                except Exception as e: st.error(f"Lỗi định dạng: {e}")
+                    if st.button("🚀 Xử lý tệp tin"):
+                        df_up = parse_import_text(string_data)
+                        if not df_up.empty:
+                            df_c = smart_import(df_up)
+                            cnt = 0
+                            for _, r in df_c.iterrows():
+                                add_customer(r['name'], r['device_info'], r['reg_date'], r['duration'])
+                                cnt += 1
+                            st.success(f"Đã nhập thành công {cnt} khách hàng!"); time.sleep(1); st.rerun()
+                        else:
+                            st.error("Không thể đọc dữ liệu từ file này.")
+                except Exception as e:
+                    st.error(f"Lỗi đọc file: {e}")
+
+        # 2. TAB DÁN TEXT
+        with t_paste:
+            with st.form("paste_form"):
+                txt = st.text_area("Dán dữ liệu vào đây (JSON hoặc CSV)", height=200, placeholder='[{"name": "A", ...}]')
+                if st.form_submit_button("🚀 Xử lý dữ liệu dán"):
+                    if txt:
+                        df_up = parse_import_text(txt)
+                        if not df_up.empty:
+                            df_c = smart_import(df_up)
+                            cnt = 0
+                            for _, r in df_c.iterrows():
+                                add_customer(r['name'], r['device_info'], r['reg_date'], r['duration'])
+                                cnt += 1
+                            st.success(f"Đã nhập thành công {cnt} khách hàng!"); time.sleep(1); st.rerun()
+                        else:
+                            st.error("Dữ liệu không hợp lệ.")
     
     with exp:
         st.subheader("📤 Xuất dữ liệu (Export)")

@@ -86,7 +86,7 @@ def get_all_customers():
         if 'guest_data' not in st.session_state:
             # Tạo dữ liệu mẫu cho Guest
             st.session_state.guest_data = pd.DataFrame([
-                {"id": 1, "name": "Khách Mẫu (Guest)", "device_info": "Chưa đăng nhập - Dữ liệu sẽ mất khi tắt tab", "reg_date": datetime.now().strftime("%d/%m/%Y"), "duration": 1}
+                {"id": 1, "name": "Khách Mẫu (Guest)", "device_info": "Chưa đăng nhập", "reg_date": datetime.now().strftime("%d/%m/%Y"), "duration": 1}
             ])
         return st.session_state.guest_data
 
@@ -159,17 +159,19 @@ def login_user(username, password):
     return data
 
 # --- LOGIC TÍNH TOÁN & IMPORT THÔNG MINH ---
-def calculate_expiry(start_str, months):
-    try:
-        # Thử nhiều định dạng ngày
-        for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y"]:
-            try:
-                start_date = datetime.strptime(str(start_str), fmt)
-                break
-            except: continue
-        else:
-            return None # Không parse được
+def parse_date(date_str):
+    """Hàm phụ trợ parse ngày tháng từ nhiều định dạng"""
+    for fmt in ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%d/%m/%y"]:
+        try:
+            return datetime.strptime(str(date_str), fmt)
+        except: continue
+    return None
 
+def calculate_expiry(start_str, months):
+    start_date = parse_date(start_str)
+    if not start_date: return None
+
+    try:
         import calendar
         year = start_date.year
         month = start_date.month + int(months)
@@ -227,8 +229,8 @@ def smart_import(df_raw):
     
     for col in df_raw.columns:
         if any(x in col for x in ['ten', 'name', 'khach', 'user']): col_map['name'] = col
-        elif any(x in col for x in ['thiet', 'device', 'may', 'note', 'ghi']): col_map['device'] = col
-        elif any(x in col for x in ['ngay', 'date', 'time', 'dang ki']): col_map['date'] = col
+        elif any(x in col for x in ['thiet', 'device', 'may', 'note', 'ghi', 'thông tin']): col_map['device'] = col
+        elif any(x in col for x in ['ngay', 'date', 'time', 'dang ki', 'reg']): col_map['date'] = col
         elif any(x in col for x in ['thang', 'duration', 'goi', 'han']): col_map['duration'] = col
     
     # 3. Tạo DataFrame chuẩn
@@ -236,7 +238,7 @@ def smart_import(df_raw):
     
     # Xử lý Tên
     if col_map['name']: df_clean['name'] = df_raw[col_map['name']]
-    else: df_clean['name'] = "Khách Nhập File" # Mặc định nếu ko tìm thấy
+    else: df_clean['name'] = "Khách Nhập File"
     
     # Xử lý Thiết bị
     if col_map['device']: df_clean['device_info'] = df_raw[col_map['device']]
@@ -256,6 +258,71 @@ def smart_import(df_raw):
         
     return df_clean
 
+# --- HÀM BÁO CÁO DOANH THU THEO THÁNG ---
+@st.dialog("📊 Báo Cáo Doanh Thu Theo Tháng")
+def show_monthly_revenue(df, price):
+    if df.empty:
+        st.warning("Chưa có dữ liệu.")
+        return
+
+    # 1. Xử lý dữ liệu để nhóm theo tháng
+    df_rev = df.copy()
+    
+    # Hàm lấy Tháng/Năm từ chuỗi ngày (Sortable YYYY-MM)
+    def get_month_year(date_str):
+        dt = parse_date(date_str)
+        if dt:
+            return dt.strftime("%Y-%m") # Trả về dạng 2025-12 để sort cho đúng
+        return "Không xác định"
+    
+    # Hàm hiển thị Tháng/Năm đẹp (MM/YYYY)
+    def get_display_month(date_str):
+        dt = parse_date(date_str)
+        if dt:
+            return dt.strftime("%m/%Y")
+        return "Không xác định"
+
+    df_rev['YYYY_MM'] = df_rev['reg_date'].apply(get_month_year)
+    df_rev['Display_Month'] = df_rev['reg_date'].apply(get_display_month)
+    
+    # Tính tiền từng đơn: Số tháng * Giá
+    df_rev['Revenue'] = df_rev['duration'] * price
+
+    # 2. Group by Tháng
+    # Bỏ qua những ngày lỗi
+    df_rev = df_rev[df_rev['YYYY_MM'] != "Không xác định"]
+    
+    monthly_stats = df_rev.groupby('YYYY_MM')['Revenue'].sum().reset_index()
+    monthly_count = df_rev.groupby('YYYY_MM')['id'].count().reset_index()
+    
+    # Merge lại để có cả số tiền và số khách
+    final_stats = pd.merge(monthly_stats, monthly_count, on='YYYY_MM')
+    final_stats.columns = ['YYYY_MM', 'Doanh Thu', 'Số Khách']
+    
+    # Tạo cột hiển thị đẹp từ cột YYYY_MM
+    final_stats['Tháng'] = final_stats['YYYY_MM'].apply(lambda x: datetime.strptime(x, "%Y-%m").strftime("%m/%Y"))
+    final_stats = final_stats.sort_values('YYYY_MM') # Sắp xếp theo thời gian
+
+    # 3. Hiển thị
+    total_rev_all = final_stats['Doanh Thu'].sum()
+    st.metric("💎 TỔNG DOANH THU TOÀN THỜI GIAN", "{:,.0f} VNĐ".format(total_rev_all))
+    st.divider()
+    
+    # Biểu đồ
+    st.subheader("Biểu đồ doanh thu")
+    st.bar_chart(final_stats, x="Tháng", y="Doanh Thu", color="#2ecc71")
+    
+    # Bảng chi tiết
+    st.subheader("Chi tiết từng tháng")
+    st.dataframe(
+        final_stats[['Tháng', 'Số Khách', 'Doanh Thu']],
+        column_config={
+            "Doanh Thu": st.column_config.NumberColumn(format="%d VNĐ"),
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+
 # --- 4. GIAO DIỆN CHÍNH ---
 init_db()
 
@@ -272,7 +339,7 @@ with st.sidebar:
             st.session_state.user_id = None
             st.rerun()
     else:
-        st.warning("Đang dùng chế độ KHÁCH (Dữ liệu sẽ mất khi tải lại trang)")
+        st.warning("⚠️ Đang dùng chế độ KHÁCH (Dữ liệu sẽ mất khi tải lại trang), hãy đăng kí/ đăng nhập tài khoản để lưu.")
         with st.expander("🔐 Đăng nhập / Đăng ký"):
             tab_login, tab_signup = st.tabs(["Đăng nhập", "Đăng ký"])
             with tab_login:
@@ -304,7 +371,7 @@ with st.sidebar:
 st.markdown("""<div class="custom-header"><h1>🖊️ HỆ THỐNG QUẢN LÝ GÓI ĐĂNG KÍ</h1></div>""", unsafe_allow_html=True)
 
 # Main Tabs
-tab1, tab2, tab3, tab4 = st.tabs(["📋 DANH SÁCH", "➕ THÊM KHÁCH", "✏️ QUẢN LÝ", "📂 IMPORT/EXPORT THÔNG MINH"])
+tab1, tab2, tab3, tab4 = st.tabs(["📋 DANH SÁCH", "➕ THÊM KHÁCH", "✏️ QUẢN LÝ", "📂 NHẬP/XUẤT"])
 
 # --- TAB 1: DANH SÁCH ---
 with tab1:
@@ -313,13 +380,9 @@ with tab1:
         price_input = st.number_input("Giá 1 tháng (VNĐ):", value=50000, step=10000)
     with col_ctrl3:
         st.write("") 
-        if st.button("💎 Xem Tổng Doanh Thu", type="primary", use_container_width=True):
+        if st.button("💎 Xem Báo Cáo Doanh Thu", type="primary", use_container_width=True):
             df_rev = get_all_customers()
-            if not df_rev.empty:
-                total_rev = df_rev['duration'].sum() * price_input
-                st.toast(f"💰 TỔNG DOANH THU: {total_rev:,.0f} VNĐ", icon="🤑")
-            else:
-                st.warning("Chưa có dữ liệu")
+            show_monthly_revenue(df_rev, price_input)
 
     st.divider()
     col_search, col_ref = st.columns([4, 1])
@@ -343,7 +406,7 @@ with tab2:
     with st.form("add_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
         new_name = c1.text_input("Tên khách hàng")
-        new_device = c2.text_input("Thông tin khách hàng") # Đã sửa label
+        new_device = c2.text_input("Thông tin khách hàng") 
         c3, c4 = st.columns(2)
         date_pick = c3.date_input("Ngày Đăng Ký", value=datetime.now(), format="DD/MM/YYYY")
         new_duration = c4.number_input("Số tháng thuê", min_value=1, value=1)
@@ -373,8 +436,11 @@ with tab3:
                 e_name = st.text_input("Tên", value=curr_rec['name'])
                 e_device = st.text_input("Thông tin khách hàng", value=curr_rec['device_info'])
                 # Parse date safe
-                try: e_date_val = datetime.strptime(curr_rec['reg_date'], "%d/%m/%Y")
+                try: 
+                    e_date_val = parse_date(curr_rec['reg_date'])
+                    if not e_date_val: e_date_val = datetime.now()
                 except: e_date_val = datetime.now()
+                
                 e_date_pick = st.date_input("Ngày ĐK", value=e_date_val, format="DD/MM/YYYY")
                 e_dur = st.number_input("Tháng", value=int(curr_rec['duration']), min_value=1)
                 
@@ -388,14 +454,14 @@ with tab3:
                 delete_customer(curr_id)
                 st.success("Đã xóa!"); time.sleep(0.5); st.rerun()
 
-# --- TAB 4: IMPORT/EXPORT THÔNG MINH ---
+# --- TAB 4: NHẬP/XUẤT ---
 with tab4:
     col_imp, col_exp = st.columns(2)
     
-    # IMPORT
+    # NHẬP
     with col_imp:
-        st.subheader("📥 Nhập Dữ Liệu (Thông Minh)")
-        st.caption("Hỗ trợ: CSV, JSON, TXT hoặc Paste văn bản. Tự động điền thiếu.")
+        st.subheader("📥 Nhập Dữ Liệu")
+        st.caption("Hỗ trợ: CSV, JSON, hoặc Paste văn bản JSON/CSV.")
         
         tab_file, tab_paste = st.tabs(["Tải File", "Nhập Tay (Copy/Paste)"])
         
@@ -412,18 +478,22 @@ with tab4:
                 except Exception as e: st.error(f"Lỗi đọc file: {e}")
 
         with tab_paste:
-            paste_txt = st.text_area("Dán dữ liệu vào đây (Mỗi dòng 1 khách, ngăn cách bằng dấu phẩy hoặc Tab)", height=150)
+            paste_txt = st.text_area("Dán dữ liệu JSON hoặc CSV vào đây", height=200, help="Dán danh sách JSON như ví dụ của bạn vào đây")
             if paste_txt:
                 try:
-                    # Thử đọc như CSV từ chuỗi string
-                    df_upload = pd.read_csv(io.StringIO(paste_txt), sep=None, engine='python', header=None)
-                    # Giả định nếu ko có header, dòng đầu là data luôn nếu ko phải string
-                    if df_upload.iloc[0].apply(lambda x: isinstance(x, str)).all():
-                        df_upload = pd.read_csv(io.StringIO(paste_txt), sep=None, engine='python')
-                except: st.error("Không thể đọc định dạng văn bản này.")
+                    # Logic 1: Thử đọc JSON trước (vì bạn yêu cầu hỗ trợ đoạn text JSON)
+                    if paste_txt.strip().startswith("[") or paste_txt.strip().startswith("{"):
+                        js_data = json.loads(paste_txt)
+                        df_upload = pd.DataFrame(js_data)
+                    else:
+                    # Logic 2: Nếu không phải JSON, thử đọc CSV
+                        df_upload = pd.read_csv(io.StringIO(paste_txt), sep=None, engine='python', header=None)
+                        if df_upload.iloc[0].apply(lambda x: isinstance(x, str)).all():
+                            df_upload = pd.read_csv(io.StringIO(paste_txt), sep=None, engine='python')
+                except: pass
 
         if not df_upload.empty:
-            st.write("Dữ liệu thô:", df_upload.head(3))
+            st.write("Dữ liệu tìm thấy:", df_upload.head(3))
             if st.button("🚀 Xử lý & Nhập vào hệ thống"):
                 # GỌI HÀM IMPORT THÔNG MINH
                 df_clean = smart_import(df_upload)
@@ -435,8 +505,10 @@ with tab4:
                 st.success(f"Đã nhập thành công {count} khách hàng!")
                 time.sleep(1.5)
                 st.rerun()
+        elif paste_txt:
+            st.error("Không thể nhận diện định dạng dữ liệu. Hãy đảm bảo đúng format JSON hoặc CSV.")
 
-    # EXPORT
+    # XUẤT
     with col_exp:
         st.subheader("📤 Xuất Dữ Liệu")
         df_export = get_all_customers()

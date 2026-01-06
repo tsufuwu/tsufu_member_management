@@ -42,17 +42,24 @@ st.markdown("""
         display: inline-block; margin-top: 10px; font-weight: 600;
     }
     
-    /* PHÓNG TO TOOLBAR CỦA BẢNG (TOOLS) */
+    /* LÀM TO VÀ HIỂN THỊ RÕ THANH CÔNG CỤ (TOOLS) */
     [data-testid="stElementToolbar"] {
-        transform: scale(1.3); /* Phóng to 130% */
+        transform: scale(1.2); /* Phóng to 120% */
         transform-origin: right center;
-        opacity: 1 !important; /* Cố gắng hiển thị rõ hơn */
+        opacity: 1 !important; /* Luôn hiện rõ */
         visibility: visible !important;
+        background-color: transparent;
     }
     [data-testid="stElementToolbarButton"] {
-        background-color: #e8f4f9;
-        border-radius: 50%;
+        background-color: #f0f2f6;
+        border: 1px solid #ddd;
+        border-radius: 5px;
         margin-left: 5px;
+        color: #31333F !important;
+    }
+    [data-testid="stElementToolbarButton"]:hover {
+        border-color: #ff4b4b;
+        color: #ff4b4b !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -81,11 +88,10 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- 3. XỬ LÝ COOKIE & AUTH (ĐÃ SỬA LỖI F5) ---
-def get_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_manager()
+# --- 3. XỬ LÝ COOKIE & AUTH (FIX LỖI F5) ---
+# Khởi tạo cookie manager ngay đầu chương trình
+# key="cookie_manager" giúp nó không bị reset liên tục
+cookie_manager = stx.CookieManager(key="cookie_manager")
 
 def login_user(username, password):
     conn = sqlite3.connect(DB_FILE)
@@ -104,17 +110,16 @@ def create_user(username, password):
     except: conn.close(); return False
 
 def check_login_status():
-    """Hàm kiểm tra đăng nhập mỗi khi tải lại trang"""
-    # 1. Nếu Session đã có user -> Đã đăng nhập
+    """Logic kiểm tra đăng nhập chặt chẽ hơn"""
+    # 1. Nếu Session đã có user -> OK
     if 'user_id' in st.session_state and st.session_state['user_id']:
         return True
     
-    # 2. Nếu chưa có Session, thử đọc Cookie
-    # Lưu ý: Cần chờ cookie manager load xong
-    time.sleep(0.1) 
+    # 2. Nếu chưa, thử đọc Cookie
     cookie_user = cookie_manager.get(cookie="game_app_user")
     
     if cookie_user:
+        # Xác thực lại với DB để đảm bảo an toàn
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute("SELECT * FROM users WHERE username=?", (cookie_user,))
@@ -318,7 +323,7 @@ init_db()
 with st.sidebar:
     st.image("https://i.ibb.co/3ymHhQVd/logo.png", width=250)
     
-    # KIỂM TRA ĐĂNG NHẬP (ƯU TIÊN COOKIE)
+    # KIỂM TRA ĐĂNG NHẬP (QUAN TRỌNG)
     is_logged_in = check_login_status()
 
     if is_logged_in:
@@ -329,6 +334,7 @@ with st.sidebar:
             cookie_manager.delete("game_app_user") # Xóa cookie
             st.rerun()
     else:
+        # Cập nhật thông báo theo yêu cầu
         st.warning("⚠️ Bạn đang dùng **CHẾ ĐỘ KHÁCH**.\n\nĐể lưu dữ liệu khi tải lại trang, vui lòng đăng nhập.")
         with st.expander("🔐 Đăng nhập / Đăng ký"):
             t1, t2 = st.tabs(["Đăng nhập", "Đăng ký"])
@@ -340,7 +346,7 @@ with st.sidebar:
                         st.session_state.user_id = res[0][0]; st.session_state.username = u
                         # Set cookie 30 ngày
                         cookie_manager.set("game_app_user", u, expires_at=datetime.now() + timedelta(days=30))
-                        time.sleep(0.5) # Đợi cookie ghi xong
+                        time.sleep(0.5)
                         st.rerun()
                     else: st.error("Sai tài khoản/mật khẩu")
             with t2:
@@ -377,11 +383,9 @@ with tab1:
     st.session_state.current_view_df = df_editor
 
     if not df_editor.empty:
-        # CHÚ THÍCH CÔNG CỤ
+        # CẬP NHẬT HƯỚNG DẪN NGẮN GỌN THEO YÊU CẦU
         st.info("""
-        **Hướng dẫn sử dụng bảng:** 🔍 **Tìm kiếm:** Bấm icon kính lúp góc phải bảng. | 
-        📥 **Tải về:** Bấm icon mũi tên tải xuống (CSV). | 
-        ⛶ **Toàn màn hình:** Bấm icon bốn góc vuông.
+        🔍 **Icon Tìm kiếm** | 📥 **Icon Tải về** | 🗑️ **Xóa:** Tích ô vuông đầu dòng cần xóa ➜ Bấm icon **Thùng rác (Delete)** ở góc phải bảng.
         """)
         
         edited_df = st.data_editor(
@@ -422,7 +426,7 @@ with tab2:
             with col_r:
                 st.write("🗑️ **Xóa dữ liệu:**")
                 st.warning("Hành động này không thể hoàn tác.")
-                # Nút xóa đã được fix lỗi hiển thị bằng use_container_width
+                # Nút xóa to rõ, không bị lỗi font
                 if st.button("❌ Xóa Khách Này", type="primary", use_container_width=True):
                     delete_customer_db(cid)
                     st.success("Đã xóa thành công!"); time.sleep(0.5); st.rerun()
